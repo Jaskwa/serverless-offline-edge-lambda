@@ -1,4 +1,9 @@
-import { CloudFrontRequest, CloudFrontRequestEvent, CloudFrontResultResponse } from 'aws-lambda';
+import {
+	CloudFrontHeaders,
+	CloudFrontRequest,
+	CloudFrontRequestEvent,
+	CloudFrontResultResponse,
+} from 'aws-lambda';
 import * as fs from 'fs-extra';
 import * as http from 'http';
 import * as https from 'https';
@@ -10,6 +15,84 @@ import { OutgoingHttpHeaders } from 'http';
 import { InternalServerError, NotFoundError } from '../errors/http';
 import { StatusCodes } from 'http-status-codes';
 
+interface FileUpstreamResponse {
+	_tag: 'file';
+	contents: string;
+}
+
+interface HttpUpstreamResponse {
+	_tag: 'http';
+	statusCode?: number;
+	headers: http.IncomingHttpHeaders;
+	body: Buffer;
+}
+
+type UpstreamResponse = FileUpstreamResponse | HttpUpstreamResponse;
+
+const isHttpResponse = (
+	response: UpstreamResponse
+): response is HttpUpstreamResponse => response._tag === 'http';
+
+const isFileResponse = (
+	response: UpstreamResponse
+): response is FileUpstreamResponse => response._tag === 'file';
+
+const incomingHeadersToCloudFrontHeaders = (
+	headers: http.IncomingHttpHeaders
+): CloudFrontHeaders =>
+	Object.keys(headers).reduce((aggregate, current) => {
+		if (aggregate[current]) {
+			if (Array.isArray(headers[current])) {
+				aggregate[current].concat(headers[current] as []);
+			} else if (typeof headers[current] === 'string') {
+				aggregate[current].push({ value: headers[current] as string });
+			}
+		} else {
+			if (Array.isArray(headers[current])) {
+				aggregate[current] = headers[current] as [];
+			} else if (typeof headers[current] === 'string') {
+				aggregate[current] = [{ value: headers[current] as string }];
+			}
+		}
+		return aggregate;
+	}, {} as CloudFrontHeaders);
+
+const header =
+	(headerName: string) =>
+	(httpResponse: HttpUpstreamResponse): string => {
+		const v = httpResponse.headers[headerName];
+		if (Array.isArray(v)) {
+			return v[0];
+		} else if (typeof v === 'string') {
+			return v;
+		}
+		return '';
+	};
+
+const contentEncoding = header('content-encoding');
+
+const upstreamResponseBodyEncoding = (
+	httpResponse: HttpUpstreamResponse
+): CloudFrontResultResponse['bodyEncoding'] =>
+	['gzip'].includes(contentEncoding(httpResponse)) ? 'base64' : 'text';
+
+const upstreamResponseBody = (
+	httpResponse: HttpUpstreamResponse
+): CloudFrontResultResponse['body'] =>
+	['gzip'].includes(contentEncoding(httpResponse))
+		? httpResponse.body.toString('base64')
+		: httpResponse.body.toString();
+
+const httpUpstreamResponseToCloudFrontResponse = (
+	upstreamResponse: HttpUpstreamResponse
+): CloudFrontResultResponse => {
+	return {
+		status: upstreamResponse.statusCode?.toString() || '200',
+		headers: incomingHeadersToCloudFrontHeaders(upstreamResponse.headers),
+		bodyEncoding: upstreamResponseBodyEncoding(upstreamResponse),
+		body: upstreamResponseBody(upstreamResponse),
+	};
+};
 
 export class Origin {
 	private readonly type: 'http' | 'https' | 'file' | 'noop' = 'http';
@@ -19,7 +102,7 @@ export class Origin {
 			this.type = 'noop';
 		} else if (/^http:\/\//.test(baseUrl)) {
 			this.type = 'http';
-		}  else if (/^https:\/\//.test(baseUrl)) {
+		} else if (/^https:\/\//.test(baseUrl)) {
 			this.type = 'https';
 		} else {
 			this.baseUrl = path.resolve(baseUrl);
@@ -27,23 +110,29 @@ export class Origin {
 		}
 	}
 
-	async retrieve(event: CloudFrontRequestEvent): Promise<CloudFrontResultResponse> {
+	async retrieve(
+		event: CloudFrontRequestEvent
+	): Promise<CloudFrontResultResponse> {
 		const { request } = event.Records[0].cf;
 
 		try {
-			const contents = await this.getResource(request);
+			const upstreamResponse = await this.getResource(request);
 
-			return {
-				status: '200',
-				statusDescription: 'OK',
-				headers: {
-					'content-type': [
-						{ key: 'content-type', value: 'application/json' }
-					]
-				},
-				bodyEncoding: 'text',
-				body: contents
-			};
+			if (isHttpResponse(upstreamResponse)) {
+				return httpUpstreamResponseToCloudFrontResponse(upstreamResponse);
+			} else {
+				return {
+					status: '200',
+					statusDescription: 'OK',
+					headers: {
+						'content-type': [
+							{ key: 'content-type', value: 'application/json' },
+						],
+					},
+					bodyEncoding: 'text',
+					body: upstreamResponse.contents,
+				};
+			}
 		} catch (err) {
 			// Make sure error gets back to user
 			const status = err.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
@@ -53,35 +142,36 @@ export class Origin {
 				status: status,
 				statusDescription: reasonPhrase,
 				headers: {
-					'content-type': [
-						{ key: 'content-type', value: 'application/json' }
-					]
+					'content-type': [{ key: 'content-type', value: 'application/json' }],
 				},
 				bodyEncoding: 'text',
 				body: JSON.stringify({
-					'code': status,
-					'message': err.message
-				})
+					code: status,
+					message: err.message,
+				}),
 			};
 		}
 	}
 
-	async getResource(request: CloudFrontRequest): Promise<string> {
+	async getResource(request: CloudFrontRequest): Promise<UpstreamResponse> {
 		const { uri: key } = request;
 
 		switch (this.type) {
 			case 'file': {
-				return this.getFileResource(key);
+				const contents = await this.getFileResource(key);
+				return { _tag: 'file', contents };
 			}
 			case 'http':
 			case 'https': {
 				return await this.getHttpResource(request);
 			}
 			case 'noop': {
-				throw new NotFoundError('Operation given as \'noop\'');
+				throw new NotFoundError('Operation given as "noop"');
 			}
 			default: {
-				throw new InternalServerError('Invalid request type (needs to be \'http\', \'https\' or \'file\')');
+				throw new InternalServerError(
+					'Invalid request type (needs to be "http", "https" or "file")'
+				);
 			}
 		}
 	}
@@ -107,8 +197,10 @@ export class Origin {
 		return await fs.readFile(`${this.baseUrl}/${fileName}`, 'utf-8');
 	}
 
-	private async getHttpResource(request: CloudFrontRequest): Promise<string> {
-		const httpModule = (this.type === 'https') ? https : http;
+	private async getHttpResource(
+		request: CloudFrontRequest
+	): Promise<HttpUpstreamResponse> {
+		const httpModule = this.type === 'https' ? https : http;
 
 		const uri = parse(request.uri);
 		const baseUrl = parse(this.baseUrl);
@@ -126,8 +218,8 @@ export class Origin {
 			path: uri.path,
 			headers: {
 				...headers,
-				Connection: 'Close'
-			}
+				Connection: 'Close',
+			},
 		};
 
 		return new Promise((resolve, reject) => {
@@ -139,7 +231,13 @@ export class Origin {
 				});
 
 				res.on('close', () => {
-					resolve(Buffer.concat(chunks).toString());
+					const retVal = {
+						_tag: 'http' as const,
+						status: res.statusCode,
+						headers: res.headers,
+						body: Buffer.concat(chunks),
+					};
+					resolve(retVal);
 				});
 				res.on('error', (err: Error) => reject(err));
 			});

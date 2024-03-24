@@ -80,5 +80,8 @@
     "snyk": "^1.1011.0",
     "tslint": "^6.1.2",
     "typescript": "^4.8.3"
+  },
+  "prettier": {
+    "singleQuote": true
   }
 }
