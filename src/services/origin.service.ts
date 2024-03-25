@@ -22,7 +22,7 @@ interface FileUpstreamResponse {
 
 interface HttpUpstreamResponse {
 	_tag: 'http';
-	statusCode?: number;
+	status?: number;
 	headers: http.IncomingHttpHeaders;
 	body: Buffer;
 }
@@ -87,7 +87,7 @@ const httpUpstreamResponseToCloudFrontResponse = (
 	upstreamResponse: HttpUpstreamResponse
 ): CloudFrontResultResponse => {
 	return {
-		status: upstreamResponse.statusCode?.toString() || '200',
+		status: upstreamResponse.status?.toString() || '200',
 		headers: incomingHeadersToCloudFrontHeaders(upstreamResponse.headers),
 		bodyEncoding: upstreamResponseBodyEncoding(upstreamResponse),
 		body: upstreamResponseBody(upstreamResponse),
@@ -119,6 +119,18 @@ export class Origin {
 			const upstreamResponse = await this.getResource(request);
 
 			if (isHttpResponse(upstreamResponse)) {
+				console.log('DEBUG: Upstream response:');
+				console.log(
+					JSON.stringify(
+						{
+							status: upstreamResponse.status,
+							headers: upstreamResponse.headers,
+							bodyLength: upstreamResponse.body.byteLength,
+						},
+						null,
+						2
+					)
+				);
 				return httpUpstreamResponseToCloudFrontResponse(upstreamResponse);
 			} else {
 				return {
@@ -205,10 +217,14 @@ export class Origin {
 		const uri = parse(request.uri);
 		const baseUrl = parse(this.baseUrl);
 
+		const initialHeaders = {
+			// put any hardcoded, default headers here
+		} as OutgoingHttpHeaders;
+
 		const headers = toHttpHeaders(request.headers).reduce((acc, item) => {
 			acc[item.key] = item.value[0];
 			return acc;
-		}, {} as OutgoingHttpHeaders);
+		}, initialHeaders);
 
 		const options: http.RequestOptions = {
 			method: request.method,
