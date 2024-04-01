@@ -186,7 +186,10 @@ export class BehaviorRouter {
 			const app = connect();
 
 			app.use(cloudfrontPost());
-			app.use(bodyParser());
+			app.use(bodyParser.urlencoded());
+			app.use(bodyParser.json());
+			app.use(bodyParser.text());
+			app.use(bodyParser.raw());
 			app.use(cookieParser() as HandleFunction);
 			app.use(
 				asyncMiddleware(
