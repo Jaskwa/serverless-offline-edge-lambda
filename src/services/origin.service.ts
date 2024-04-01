@@ -98,6 +98,7 @@ export class Origin {
 	private readonly type: 'http' | 'https' | 'file' | 'noop' = 'http';
 
 	constructor(public readonly baseUrl: string = '') {
+		console.log(`Creating Origin for: '${baseUrl}'`);
 		if (!baseUrl) {
 			this.type = 'noop';
 		} else if (/^http:\/\//.test(baseUrl)) {

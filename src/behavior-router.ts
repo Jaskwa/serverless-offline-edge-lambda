@@ -1,3 +1,4 @@
+// @ts-ignore indent
 import { Context } from 'aws-lambda';
 import bodyParser from 'body-parser';
 import connect, { HandleFunction } from 'connect';
@@ -16,10 +17,14 @@ import { asyncMiddleware, cloudfrontPost } from './middlewares';
 import { CloudFrontLifecycle, Origin, CacheService } from './services';
 import { CFDistribution, ServerlessInstance, ServerlessOptions } from './types';
 import {
-	buildConfig, buildContext, CloudFrontHeadersHelper, ConfigBuilder,
-	convertToCloudFrontEvent, getOriginFromCfDistribution, IncomingMessageWithBodyAndCookies
+	buildConfig,
+	buildContext,
+	CloudFrontHeadersHelper,
+	ConfigBuilder,
+	convertToCloudFrontEvent,
+	getOriginFromCfDistribution,
+	IncomingMessageWithBodyAndCookies,
 } from './utils';
-
 
 interface OriginMapping {
 	pathPattern: string;
@@ -31,7 +36,7 @@ export class BehaviorRouter {
 	private builder: ConfigBuilder;
 	private context: Context;
 	private behaviors = new Map<string, FunctionSet>();
-	private cfResources:  Record<string, CFDistribution>;
+	private cfResources: Record<string, CFDistribution>;
 
 	private cacheDir: string;
 	private fileDir: string;
@@ -55,9 +60,15 @@ export class BehaviorRouter {
 		this.context = buildContext();
 
 		this.cfResources = serverless.service?.resources?.Resources || {};
-		this.cacheDir = path.resolve(options.cacheDir || path.join(os.tmpdir(), 'edge-lambda'));
-		this.fileDir = path.resolve(options.fileDir || path.join(os.tmpdir(), 'edge-lambda'));
-		this.injectedHeadersFile = options.headersFile ? path.resolve(options.headersFile) : undefined;
+		this.cacheDir = path.resolve(
+			options.cacheDir || path.join(os.tmpdir(), 'edge-lambda')
+		);
+		this.fileDir = path.resolve(
+			options.fileDir || path.join(os.tmpdir(), 'edge-lambda')
+		);
+		this.injectedHeadersFile = options.headersFile
+			? path.resolve(options.headersFile)
+			: undefined;
 		this.path = this.serverless.service.custom.offlineEdgeLambda.path || '';
 
 		fs.mkdirpSync(this.cacheDir);
@@ -79,26 +90,46 @@ export class BehaviorRouter {
 
 	watchFiles(pattern: any, options: any) {
 		const watcher = chokidar.watch(pattern, options);
-		watcher.on('all', debounce(async (eventName, srcPath) => {
-			console.log('Lambda files changed, syncing...');
-			await this.extractBehaviors();
-			console.log('Lambda files synced');
-		}, options.debounce, true));
+		watcher.on(
+			'all',
+			debounce(
+				async (eventName, srcPath) => {
+					console.log('Lambda files changed, syncing...');
+					await this.extractBehaviors();
+					console.log('Lambda files synced');
+				},
+				options.debounce,
+				true
+			)
+		);
 	}
 
 	match(req: IncomingMessage): FunctionSet | null {
+		console.log(`Matching request: ${req.url}...`);
 		if (!req.url) {
 			return null;
 		}
 
 		const url = new URL(req.url, 'http://localhost');
 
-		for (const [, handler] of this.behaviors) {
+		// this.behaviours isn't ordered by anything ffs
+		// so we're gonna order them by pattern length
+		console.log('*** BEHAVIOR PATTERNS ***');
+		const sortedBehaviors = new Map(
+			[...this.behaviors.entries()].sort(([a], [b]) => b.length - a.length)
+		);
+		sortedBehaviors.forEach((behavior) => console.log(behavior.pattern));
+		for (const [, handler] of sortedBehaviors) {
+			console.log(
+				`Testing '${url.pathname}' against '${handler.regex.source}'`
+			);
 			if (handler.regex.test(url.pathname)) {
+				console.log(`Matched: '${handler.name}'`);
 				return handler;
 			}
 		}
 
+		console.log('No match found, returning default handler: *');
 		return this.behaviors.get('*') || null;
 	}
 
@@ -157,66 +188,89 @@ export class BehaviorRouter {
 			app.use(cloudfrontPost());
 			app.use(bodyParser());
 			app.use(cookieParser() as HandleFunction);
-			app.use(asyncMiddleware(async (req: IncomingMessageWithBodyAndCookies, res: ServerResponse) => {
-				if ((req.method || '').toUpperCase() === 'PURGE') {
-					await this.purgeStorage();
+			app.use(
+				asyncMiddleware(
+					async (
+						req: IncomingMessageWithBodyAndCookies,
+						res: ServerResponse
+					) => {
+						if ((req.method || '').toUpperCase() === 'PURGE') {
+							await this.purgeStorage();
 
-					res.statusCode = StatusCodes.OK;
-					res.end();
-					return;
-				}
+							res.statusCode = StatusCodes.OK;
+							res.end();
+							return;
+						}
 
-				const handler = this.match(req);
+						const handler = this.match(req);
 
-				if (!handler) {
-					res.statusCode = StatusCodes.NOT_FOUND;
-					res.end();
-					return;
-				}
+						if (!handler) {
+							res.statusCode = StatusCodes.NOT_FOUND;
+							res.end();
+							return;
+						}
 
-				const customOrigin = handler.distribution in this.cfResources ?
-					getOriginFromCfDistribution(handler.pattern, this.cfResources[handler.distribution]) :
-					null;
+						const customOrigin =
+							handler.distribution in this.cfResources
+								? getOriginFromCfDistribution(
+										handler.pattern,
+										this.cfResources[handler.distribution]
+								  )
+								: null;
 
-				const cfEvent = convertToCloudFrontEvent(req, this.builder('viewer-request'), this.injectedHeadersFile);
+						const cfEvent = convertToCloudFrontEvent(
+							req,
+							this.builder('viewer-request'),
+							this.injectedHeadersFile
+						);
 
-				try {
-					const context = {
-						...this.context,
-						functionName: handler.name,
-					};
-					const lifecycle = new CloudFrontLifecycle(this.serverless, this.options, cfEvent,
-																context, this.cacheService, handler, customOrigin);
-					const response = await lifecycle.run(req.url as string);
+						try {
+							const context = {
+								...this.context,
+								functionName: handler.name,
+							};
+							const lifecycle = new CloudFrontLifecycle(
+								this.serverless,
+								this.options,
+								cfEvent,
+								context,
+								this.cacheService,
+								handler,
+								customOrigin
+							);
+							const response = await lifecycle.run(req.url as string);
 
-					if (!response) {
-						throw new InternalServerError('No response set after full request lifecycle');
-					}
+							if (!response) {
+								throw new InternalServerError(
+									'No response set after full request lifecycle'
+								);
+							}
 
-					res.statusCode = parseInt(response.status, 10);
-					res.statusMessage = response.statusDescription || '';
+							res.statusCode = parseInt(response.status, 10);
+							res.statusMessage = response.statusDescription || '';
 
-					const helper = new CloudFrontHeadersHelper(response.headers);
+							const helper = new CloudFrontHeadersHelper(response.headers);
 
-					for (const { key, value } of helper.asHttpHeaders()) {
-						if (value) {
-							res.setHeader(key as string, value);
+							for (const { key, value } of helper.asHttpHeaders()) {
+								if (value) {
+									res.setHeader(key as string, value);
+								}
+							}
+
+							if (response.bodyEncoding === 'base64') {
+								res.end(Buffer.from(response.body ?? '', 'base64'));
+							} else {
+								res.end(response.body);
+							}
+						} catch (err) {
+							this.handleError(err, res);
+							return;
 						}
 					}
+				)
+			);
 
-					if (response.bodyEncoding === 'base64') {
-						res.end(Buffer.from(response.body ?? '', 'base64'));
-					} else {
-						res.end(response.body);
-					}
-				} catch (err) {
-					this.handleError(err, res);
-					return;
-				}
-			}));
-
-
-			return new Promise(resolve => {
+			return new Promise((resolve) => {
 				this.server = createServer(app);
 				this.server.listen(port);
 				this.server.on('close', (e: string) => {
@@ -233,12 +287,13 @@ export class BehaviorRouter {
 	public handleError(err: HttpError, res: ServerResponse) {
 		res.statusCode = err.statusCode || StatusCodes.INTERNAL_SERVER_ERROR;
 
-		const payload = JSON.stringify(err.hasOwnProperty('getResponsePayload') ?
-			err.getResponsePayload() :
-			{
-				code: StatusCodes.INTERNAL_SERVER_ERROR,
-				message: err.stack || err.message
-			}
+		const payload = JSON.stringify(
+			err.hasOwnProperty('getResponsePayload')
+				? err.getResponsePayload()
+				: {
+						code: StatusCodes.INTERNAL_SERVER_ERROR,
+						message: err.stack || err.message,
+				  }
 		);
 
 		res.end(payload);
@@ -262,36 +317,47 @@ export class BehaviorRouter {
 		const { functions } = this.serverless.service;
 
 		const behaviors = this.behaviors;
-		const lambdaDefs = Object.entries(functions)
-			.filter(([, fn]) => 'lambdaAtEdge' in fn);
+		const lambdaDefs = Object.entries(functions).filter(
+			([, fn]) => 'lambdaAtEdge' in fn
+		);
 
 		behaviors.clear();
 
 		for await (const [, def] of lambdaDefs) {
-
 			const pattern = def.lambdaAtEdge.pathPattern || '*';
 			const distribution = def.lambdaAtEdge.distribution || '';
 
 			if (!behaviors.has(pattern)) {
 				const origin = this.origins.get(pattern);
-				behaviors.set(pattern, new FunctionSet(pattern, distribution, this.log, origin, def.name));
+				behaviors.set(
+					pattern,
+					new FunctionSet(pattern, distribution, this.log, origin, def.name)
+				);
 			}
 
 			const fnSet = behaviors.get(pattern) as FunctionSet;
 
 			// Don't try to register distributions that come from other sources
 			if (fnSet.distribution !== distribution) {
-				this.log(`Warning: pattern ${pattern} has registered handlers for cf distributions ${fnSet.distribution}` +
+				this.log(
+					`Warning: pattern ${pattern} has registered handlers for cf distributions ${fnSet.distribution}` +
 						` and ${distribution}. There is no way to tell which distribution should be used so only ${fnSet.distribution}` +
-						` has been registered.` );
+						` has been registered.`
+				);
 				continue;
 			}
 
-			await fnSet.setHandler(def.lambdaAtEdge.eventType, path.join(this.path, def.handler));
+			await fnSet.setHandler(
+				def.lambdaAtEdge.eventType,
+				path.join(this.path, def.handler)
+			);
 		}
 
 		if (!behaviors.has('*')) {
-			behaviors.set('*', new FunctionSet('*', '', this.log, this.origins.get('*')));
+			behaviors.set(
+				'*',
+				new FunctionSet('*', '', this.log, this.origins.get('*'))
+			);
 		}
 	}
 
@@ -309,15 +375,19 @@ export class BehaviorRouter {
 
 	private logBehaviors() {
 		this.behaviors.forEach((behavior, key) => {
-
-			this.log(`Lambdas for path pattern ${key}` +
-				(behavior.distribution === '' ? ':' : ` on ${behavior.distribution}:`)
+			this.log(
+				`Lambdas for path pattern ${key}` +
+					(behavior.distribution === '' ? ':' : ` on ${behavior.distribution}:`)
 			);
 
-			behavior.viewerRequest && this.log(`viewer-request => ${behavior.viewerRequest.path || ''}`);
-			behavior.originRequest && this.log(`origin-request => ${behavior.originRequest.path || ''}`);
-			behavior.originResponse && this.log(`origin-response => ${behavior.originResponse.path || ''}`);
-			behavior.viewerResponse && this.log(`viewer-response => ${behavior.viewerResponse.path || ''}`);
+			behavior.viewerRequest &&
+				this.log(`viewer-request => ${behavior.viewerRequest.path || ''}`);
+			behavior.originRequest &&
+				this.log(`origin-request => ${behavior.originRequest.path || ''}`);
+			behavior.originResponse &&
+				this.log(`origin-response => ${behavior.originResponse.path || ''}`);
+			behavior.viewerResponse &&
+				this.log(`viewer-response => ${behavior.viewerResponse.path || ''}`);
 
 			console.log(); // New line
 		});

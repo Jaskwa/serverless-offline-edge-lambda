@@ -1,5 +1,8 @@
 import {
-	CloudFrontRequestEvent, CloudFrontResponseResult, CloudFrontOrigin, Context
+	CloudFrontRequestEvent,
+	CloudFrontResponseResult,
+	CloudFrontOrigin,
+	Context,
 } from 'aws-lambda';
 
 import { NoResult } from '../errors';
@@ -8,9 +11,7 @@ import { combineResult, isResponseResult, toResultResponse } from '../utils';
 import { CacheService } from './cache.service';
 import { ServerlessInstance, ServerlessOptions } from '../types';
 
-
 export class CloudFrontLifecycle {
-
 	private readonly log: (message: string) => void;
 
 	constructor(
@@ -20,7 +21,7 @@ export class CloudFrontLifecycle {
 		private context: Context,
 		private fileService: CacheService,
 		private fnSet: FunctionSet,
-		private origin: CloudFrontOrigin | null,
+		private origin: CloudFrontOrigin | null
 	) {
 		this.log = serverless.cli.log.bind(serverless.cli);
 	}
@@ -94,7 +95,7 @@ export class CloudFrontLifecycle {
 	}
 
 	async onOrigin() {
-		this.log('→ origin');
+		this.log(`→ origin (pattern: '${this.fnSet.pattern}')`);
 		return await this.fnSet.origin.retrieve(this.event);
 	}
 
